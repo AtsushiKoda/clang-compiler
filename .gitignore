@@ -1,0 +1,7 @@
+.vscode
+.devcontainer
+64cc
+tmp*
+*.o
+*~
+a.out
