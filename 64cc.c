@@ -181,6 +181,7 @@ Node *new_node_number(int val)
 
 Node *expr();
 Node *mul();
+Node *unary();
 Node *primary();
 
 // 左結合の演算子をパースする関数
@@ -199,19 +200,30 @@ Node *expr()
     }
 }
 
-// 生成規則: mul = primary ("*" primary | "/" primary)*
+// 生成規則: mul = unary ("*" unary | "/" unary)*
 Node *mul()
 {
-    Node *node = primary();
+    Node *node = unary();
 
     for (;;) {
         if (consume('*'))
-            node = new_node(ND_MUL, node, primary()); 
+            node = new_node(ND_MUL, node, unary()); 
         else if (consume('/'))
-            node = new_node(ND_DIV, node, primary());
+            node = new_node(ND_DIV, node, unary());
         else
             return node;
     }
+}
+
+// 生成規則: unary = ("+" | "-")? primary
+Node *unary()
+{
+    if (consume('+'))
+        return primary();
+    if (consume('-'))
+        // -x を 0-x に置き換える
+        return new_node(ND_SUB, new_node_number(0), primary());
+    return primary();
 }
 
 // 生成規則: primary = "(" expr ")" | num
