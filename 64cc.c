@@ -19,6 +19,12 @@ typedef enum
     ND_SUB, // -
     ND_MUL, // *
     ND_DIV, // /
+    ND_EQ,  // ==
+    ND_NE,  // !=
+    ND_LT,  // <
+    ND_LE,  // <=
+    ND_GT,  // >
+    ND_GE,  // >=
     ND_NUM, // 整数
 } NodeKind;
 
@@ -30,6 +36,7 @@ struct Token
     Token *next;    // 次の入力トークン
     int val;        // kindがTK_NUMの場合、その数値
     char *str;      // トークン文字列
+    int len;        // トークンの長さ
 };
 
 typedef struct Node Node;
@@ -77,22 +84,24 @@ void error(char *fmt, ...)
 }
 
 // 次のトークンが求めている記号のときには、トークンを一つ読み進め、真を返す
-bool consume(char op)
+bool consume(char *op)
 {
-    if (token->kind != TK_RESERVED || token->str[0] != op) {
+    if (token->kind != TK_RESERVED || 
+        strlen(op) != token->len ||
+        memcmp(token->str, op, token->len))
         return false;
-    } else {
-        token = token->next;
-        return true;
-    }
+    token = token->next;
+    return true;
 }
 
 // 次のトークンが求める記号のときは、トークンを一つ読み進める
 // それ以外はエラーを返す
-void expect(char op)
+void expect(char *op)
 {
-    if (token->kind != TK_RESERVED || token->str[0] != op) {
-        error_at(token->str, "'%c'ではありません", op);
+    if (token->kind != TK_RESERVED || 
+        strlen(op) != token->len ||
+        memcmp(token->str, op, token->len)) {
+        error_at(token->str, "\"%s\"ではありません", op);
     } else {
         token = token->next;
     }
@@ -116,13 +125,19 @@ bool at_eof()
 }
 
 // 新しいトークンを作成してcurに繋げる
-Token *new_token(TokenKind kind, Token *cur, char *str)
+Token *new_token(TokenKind kind, Token *cur, char *str, int len)
 {
     Token *tok = calloc(1, sizeof(Token));
     tok->kind = kind;
     tok->str = str;
+    tok->len = len;
     cur->next = tok;
     return tok;
+}
+
+bool startswith(char *p, char *q)
+{
+    return memcmp(p, q, strlen(q)) == 0;
 }
 
 // 文字列をトークナイズして返す
@@ -142,21 +157,30 @@ Token *tokenize(char *p)
             continue;
         }
 
-        if (strchr("+-*/()", *p)) {
-            cur = new_token(TK_RESERVED, cur, p++);
+        if (startswith(p, "==") || startswith(p, "!=") ||
+            startswith(p, "<=") || startswith(p, ">=")) {
+            cur = new_token(TK_RESERVED, cur, p, 2);
+            p += 2;
+            continue; 
+        }
+
+        if (strchr("+-*/()<>", *p)) {
+            cur = new_token(TK_RESERVED, cur, p++, 1);
             continue;
         }
 
         if (isdigit(*p)) {
-            cur = new_token(TK_NUM, cur, p);
+            cur = new_token(TK_NUM, cur, p, 0);
+            char *q = p;
             cur->val = strtol(p, &p, 10);
+            cur->len = p - q;
             continue;
         }
 
         error_at(p, "トークナイズできません");
     }
 
-    new_token(TK_EOF, cur, p);
+    new_token(TK_EOF, cur, p, 0);
     return head.next;
 }
 
@@ -180,20 +204,63 @@ Node *new_node_number(int val)
 }
 
 Node *expr();
+Node *equality();
+Node *relational();
+Node *add();
 Node *mul();
 Node *unary();
 Node *primary();
 
 // 左結合の演算子をパースする関数
-// 生成規則: expr = mul ("+" mul | "-" mul)*
+// 生成規則: expr = equality
 Node *expr()
+{
+    Node *node = equality();
+}
+
+// 生成規則: equality = relational ("==" relational | "!=" relational)*
+Node *equality()
+{
+    Node *node = relational();
+    
+    for (;;) {
+        if (consume("=="))
+            node = new_node(ND_EQ, node, relational());
+        else if (consume("!="))
+            node = new_node(ND_NE, node, relational());
+        else
+            return node;
+    }
+}
+
+// 生成規則: relational = add ("<" add | "<=" add | ">" add |)
+Node *relational()
+{
+    Node *node = add();
+
+    for (;;) {
+        if (consume("<"))
+            node = new_node(ND_LT, node, add());
+        else if (consume("<="))
+            node = new_node(ND_LE, node, add());
+        else if (consume(">"))
+            node = new_node(ND_GT, node, add());
+        else if (consume(">="))
+            node = new_node(ND_GE, node, add());
+        else
+            return node;
+    }
+}
+
+// 生成規則: add = mul ("+" mul | "-" mul)*
+Node *add()
 {
     Node *node = mul();
 
     for (;;) {
-        if (consume('+'))
+        if (consume("+"))
             node = new_node(ND_ADD, node, mul()); 
-        else if (consume('-'))
+        else if (consume("-"))
             node = new_node(ND_SUB, node, mul());
         else
             return node;
@@ -206,9 +273,9 @@ Node *mul()
     Node *node = unary();
 
     for (;;) {
-        if (consume('*'))
+        if (consume("*"))
             node = new_node(ND_MUL, node, unary()); 
-        else if (consume('/'))
+        else if (consume("/"))
             node = new_node(ND_DIV, node, unary());
         else
             return node;
@@ -218,9 +285,9 @@ Node *mul()
 // 生成規則: unary = ("+" | "-")? primary
 Node *unary()
 {
-    if (consume('+'))
+    if (consume("+"))
         return primary();
-    if (consume('-'))
+    if (consume("-"))
         // -x を 0-x に置き換える
         return new_node(ND_SUB, new_node_number(0), primary());
     return primary();
@@ -229,9 +296,9 @@ Node *unary()
 // 生成規則: primary = "(" expr ")" | num
 Node *primary()
 {
-    if (consume('(')) {
+    if (consume("(")) {
         Node *node = expr();
-        expect(')');
+        expect(")");
         return node;
     }
 
@@ -266,6 +333,30 @@ void gen(Node *node)
         break;
     case ND_DIV:
         printf("  sdiv x0, x0, x1\n");
+        break;
+    case ND_EQ:
+        printf("  cmp x0, x1\n");
+        printf("  cset x0, EQ\n");
+        break;
+    case ND_NE:
+        printf("  cmp x0, x1\n");
+        printf("  cset x0, NE\n");
+        break;
+    case ND_LT:
+        printf("  cmp x0, x1\n");
+        printf("  cset x0, LT\n");
+        break;
+    case ND_LE:
+        printf("  cmp x0, x1\n");
+        printf("  cset x0, LE\n");
+        break;
+    case ND_GT:
+        printf("  cmp x0, x1\n");
+        printf("  cset x0, GT\n");
+        break;
+    case ND_GE:
+        printf("  cmp x0, x1\n");
+        printf("  cset x0, GE\n");
         break;
     }
 
